@@ -1,11 +1,12 @@
 package scan
 
-
 import (
 	"net"
-	"://github.com"
-	"://github.com/layers"
+
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 )
+
 func SendSYNPacket(srcIP, dstIP string, srcPort, dstPort int) error {
 	srcIPNet := net.ParseIP(srcIP)
 	dstIPNet := net.ParseIP(dstIP)
@@ -24,8 +25,8 @@ func SendSYNPacket(srcIP, dstIP string, srcPort, dstPort int) error {
 		SrcPort: layers.TCPPort(srcPort),
 		DstPort: layers.TCPPort(dstPort),
 		Seq:     110502, // random number
-		SYN:     true,   
-		Window:  14600,  
+		SYN:     true,
+		Window:  14600,
 	}
 	if err := tcpLayer.SetNetworkLayerForChecksum(ipLayer); err != nil {
 		return err
@@ -33,7 +34,7 @@ func SendSYNPacket(srcIP, dstIP string, srcPort, dstPort int) error {
 
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{
-		ComputeChecksums: true, 
+		ComputeChecksums: true,
 		FixLengths:       true,
 	}
 

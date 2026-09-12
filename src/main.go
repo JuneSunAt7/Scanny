@@ -1,4 +1,3 @@
-// test
 package main
 
 import (
@@ -8,6 +7,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"scanny/scan"
 )
 
 type ScanJob struct {
@@ -20,6 +21,7 @@ type ScanResult struct {
 	Port       int
 	IsOpen     bool
 	HTTPStatus string
+	Method     string // "tcp" или "syn"
 }
 
 func worker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResult, wg *sync.WaitGroup) {
@@ -40,19 +42,19 @@ func worker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResult,
 		}
 		target := fmt.Sprintf("%s:%d", job.IP, job.Port)
 
-		// fast check tcp
 		dialer := net.Dialer{Timeout: 1 * time.Second}
 		conn, err := dialer.DialContext(ctx, "tcp", target)
 
 		if err != nil {
 			continue
 		}
-		conn.Close() // port is open
+		conn.Close()
 
 		result := ScanResult{
 			IP:     job.IP,
 			Port:   job.Port,
 			IsOpen: true,
+			Method: "tcp",
 		}
 		if job.Port == 80 || job.Port == 443 || job.Port == 8080 {
 			protocol := "http"
@@ -73,11 +75,40 @@ func worker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResult,
 	}
 }
 
+func synWorker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResult, wg *sync.WaitGroup, srcIP string) {
+	defer wg.Done()
+
+	for job := range jobs {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		err := scan.SendSYNPacket(srcIP, job.IP, 54321, job.Port)
+		if err != nil {
+			fmt.Printf("[-] Ошибка отправки SYN на %s:%d: %v\n", job.IP, job.Port, err)
+			continue
+		}
+
+		// in prod raw socket listener
+		result := ScanResult{
+			IP:     job.IP,
+			Port:   job.Port,
+			IsOpen: true, 
+			Method: "syn",
+		}
+		results <- result
+	}
+}
+
 func main() {
 	targetIP := "127.0.0.1"
+	srcIP := "127.0.0.1" // IP deist for SYN packets
 	portsToScan := []int{21, 22, 25, 53, 80, 110, 443, 3306, 8080}
 
 	numWorkers := 50
+	scanMethod := "tcp" // or "syn"
 
 	jobs := make(chan ScanJob, len(portsToScan))
 	results := make(chan ScanResult, len(portsToScan))
@@ -86,9 +117,19 @@ func main() {
 	defer cancel()
 
 	var wg sync.WaitGroup
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go worker(ctx, jobs, results, &wg)
+
+	if scanMethod == "syn" {
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go synWorker(ctx, jobs, results, &wg, srcIP)
+		}
+		fmt.Println("Используется SYN-сканирование")
+	} else {
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go worker(ctx, jobs, results, &wg)
+		}
+		fmt.Println("Используется TCP-сканирование")
 	}
 
 	for _, port := range portsToScan {
@@ -96,19 +137,22 @@ func main() {
 	}
 	close(jobs)
 
-	// add results in gorutinre
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	fmt.Printf("Сканирование %s запущенно с %d воркерами...\n\n", targetIP, numWorkers)
+	fmt.Printf("\nСканирование %s запущено с %d воркерами...\n\n", targetIP, numWorkers)
 	for res := range results {
 		if res.IsOpen {
+			methodLabel := ""
+			if res.Method == "syn" {
+				methodLabel = " [SYN]"
+			}
 			if res.HTTPStatus != "" {
-				fmt.Printf("[+] Порт %d ОТКРЫТ | HTTP: %s\n", res.Port, res.HTTPStatus)
+				fmt.Printf("[+] Порт %d ОТКРЫТ%s | HTTP: %s\n", res.Port, methodLabel, res.HTTPStatus)
 			} else {
-				fmt.Printf("[+] Порт %d ОТКРЫТ\n", res.Port)
+				fmt.Printf("[+] Порт %d ОТКРЫТ%s\n", res.Port, methodLabel)
 			}
 		}
 	}
