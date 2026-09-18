@@ -21,7 +21,6 @@ type ScanJob struct {
 	Port int
 }
 
-// CVEEntry описывает структуру ответа от API уязвимостей
 type CVEEntry struct {
 	ID      string `json:"id"`
 	Summary string `json:"summary"`
@@ -32,12 +31,12 @@ type ScanResult struct {
 	Port       int
 	IsOpen     bool
 	HTTPStatus string
-	Method     string     // "tcp" или "syn"
-	Banner     string     // Полученная строка-приветствие сервиса
-	CVEs       []CVEEntry // Список найденных уязвимостей
+	Method     string     
+	Banner     string    
+	CVEs       []CVEEntry 
 }
 
-// grabBanner пытается прочитать приветственный баннер из открытого сокета
+
 func grabBanner(ctx context.Context, ip string, port int) string {
 	target := fmt.Sprintf("%s:%d", ip, port)
 	dialer := net.Dialer{Timeout: 2 * time.Second}
@@ -48,7 +47,6 @@ func grabBanner(ctx context.Context, ip string, port int) string {
 	}
 	defer conn.Close()
 
-	// Для HTTP-портов отправляем минимальный запрос, чтобы спровоцировать ответ с баннером сервера
 	if port == 80 || port == 8080 || port == 443 {
 		_, _ = conn.Write([]byte("HEAD / HTTP/1.0\r\n\r\n"))
 	}
@@ -60,20 +58,17 @@ func grabBanner(ctx context.Context, ip string, port int) string {
 		return ""
 	}
 
-	// Очищаем баннер от мусорных символов и переносов строк
 	banner := string(buffer[:n])
 	banner = strings.ReplaceAll(banner, "\r", "")
 	banner = strings.ReplaceAll(banner, "\n", " ")
 	return strings.TrimSpace(banner)
 }
 
-// checkCVE отправляет запрос к публичной базе данных CIRCL CVE API
 func checkCVE(keyword string) []CVEEntry {
 	if keyword == "" {
 		return nil
 	}
 
-	// Поиск по ключевому слову софта (например, nginx, openssh, apache)
 	url := fmt.Sprintf("https://circl.lu", strings.ToLower(keyword))
 	client := &http.Client{Timeout: 4 * time.Second}
 
@@ -95,11 +90,9 @@ func checkCVE(keyword string) []CVEEntry {
 	return results
 }
 
-// detectSoftware пытается вычленить имя известного ПО из сырого баннера
 func detectSoftware(banner string) string {
 	lowBanner := strings.ToLower(banner)
 	
-	// Базовые маркеры для демонстрации (в идеале заменить на регулярные выражения)
 	services := []string{"openssh", "nginx", "apache", "vsftpd", "tomcat", "mysql", "redis", "smb"}
 	for _, service := range services {
 		if strings.Contains(lowBanner, service) {
@@ -142,7 +135,6 @@ func worker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResult,
 			Method: "tcp",
 		}
 
-		// [Интеграция CVE]: Собираем баннер, если сканируем по TCP
 		banner := grabBanner(ctx, job.IP, job.Port)
 		if banner != "" {
 			result.Banner = banner
@@ -195,9 +187,6 @@ func synWorker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResu
 			IsOpen: true, 
 			Method: "syn",
 		}
-
-		// При SYN-сканировании полноценное соединение не устанавливается,
-		// поэтому для получения баннера и CVE мы отправляем точечный TCP-запрос
 		banner := grabBanner(ctx, job.IP, job.Port)
 		if banner != "" {
 			result.Banner = banner
@@ -288,7 +277,7 @@ func main() {
 				msg += fmt.Sprintf(" | HTTP: %s", res.HTTPStatus)
 			}
 			if res.Banner != "" {
-				// Отрезаем слишком длинные баннеры для красоты вывода
+		
 				displayBanner := res.Banner
 				if len(displayBanner) > 60 {
 					displayBanner = displayBanner[:57] + "..."
@@ -298,11 +287,9 @@ func main() {
 			
 			pterm.Success.Println(msg)
 
-			// Вывод найденных CVE уязвимостей
 			if len(res.CVEs) > 0 {
 				pterm.FgYellow.Println("   └── Найдена угроза! Свежие CVE:")
 				
-				// Лимитируем вывод до 3-х уязвимостей, чтобы терминал не затапливало
 				limit := 3
 				if len(res.CVEs) < limit {
 					limit = len(res.CVEs)
