@@ -88,7 +88,6 @@ func synWorker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResu
 		default:
 		}
 
-		// Генерируем случайный порт источника для большей скрытности (опционально)
 		srcPort := randomInRange(1024, 65535)
 		
 		err := scan.SendSYNPacket(srcIP, job.IP, srcPort, job.Port)
@@ -98,8 +97,7 @@ func synWorker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResu
 			continue
 		}
 
-		// ВАЖНО: Здесь отсутствует логика ожидания ответа (SYN-ACK).
-		// Сейчас код просто считает порт открытым, если пакет ушел.
+	
 		result := ScanResult{
 			IP:     job.IP,
 			Port:   job.Port,
@@ -115,7 +113,6 @@ func randomInRange(min, max int) int {
 }
 
 func main() {
-	// 1. Определение флагов
 	targetIP := flag.String("i", "127.0.0.1", "Целевой IP адрес для сканирования")
 	scanMethod := flag.String("m", "tcp", "Метод сканирования: 'tcp' или 'syn'")
 	numWorkersFlag := flag.Int("w", 0, "Количество воркеров (0 = авто)")
@@ -157,7 +154,7 @@ func main() {
 	if *scanMethod == "syn" {
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go synWorker(ctx, jobs, results, &wg, *targetIP) // Используем targetIP как srcIP для локального теста
+			go synWorker(ctx, jobs, results, &wg, *targetIP) 
 		}
 	} else {
 		for i := 0; i < numWorkers; i++ {
@@ -166,19 +163,15 @@ func main() {
 		}
 	}
 
-	// 4. Отправка задач
 	for _, port := range portsToScan {
 		jobs <- ScanJob{IP: *targetIP, Port: port}
 	}
 	close(jobs)
-
-	// 5. Ожидание завершения и закрытие канала результатов
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	// 6. Вывод результатов
 	foundCount := 0
 	for res := range results {
 		if res.IsOpen {

@@ -3,7 +3,7 @@ name: Go CI/CD
 on:
   push:
     branches: [ "main" ]
-    tags: [ "v*.*.*" ] # ← Включает запуск при создании тегов версий (например, v0.0.1)
+    tags: [ "v*.*.*" ]
   pull_request:
     branches: [ "main" ]
 
@@ -21,6 +21,13 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: '1.24'
+        cache: false # Отключаем встроенный кэш setup-go, так как golangci-lint использует свой эффективный кэш
+
+    - name: Run golangci-lint
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: v1.61 # Указываем стабильную версию линтера
+        working-directory: src # Указываем папку с исходным кодом Go
     
     - name: Build
       run: go build -v ./...
@@ -60,21 +67,20 @@ jobs:
 
   release:
     needs: cross-compile
-    if: startsWith(github.ref, 'refs/tags/v') # ← Выполняется только для тегов версий
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
-      contents: write # ← Разрешение для создания релиза и загрузки файлов
+      contents: write
     
     steps:
     - name: Download all artifacts
       uses: actions/download-artifact@v4
       with:
-        path: all-artifacts # ← Скачивает все 6 папок в одну директорию
+        path: all-artifacts
     
     - name: Prepare assets for release
       run: |
         mkdir release-assets
-        # Копируем бинарники из подпапок в одну общую папку
         find all-artifacts -type f -exec cp {} release-assets/ \;
         ls -la release-assets
     
