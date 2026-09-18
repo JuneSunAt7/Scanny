@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
+"math/rand"
 	"scanny/scan"
+	"github.com/pterm/pterm"
+
 )
 
 type ScanJob struct {
@@ -101,9 +103,11 @@ func synWorker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResu
 		results <- result
 	}
 }
-
+func randomInRange(min, max int) int {
+	return rand.Intn(max-min+1) + min
+}
 func main() {
-	
+
 	fmt.Println("input target IP")
 	var target string
 	fmt.Scanln(&target)
@@ -111,9 +115,11 @@ func main() {
 	targetIP := target
 	srcIP := "127.0.0.1" // IP deist for SYN packets
 	
-	portsToScan := []int{21, 22, 25, 53, 80, 110, 443, 3306, 8080}
-
-	numWorkers := 50
+	portsToScan := [8096]int{}
+	for i := 0; i < 8096; i++ {
+        portsToScan[i] = i + 1
+    }
+	numWorkers := randomInRange(50, 1024)
 	scanMethod := "tcp" // or "syn"
 
 	jobs := make(chan ScanJob, len(portsToScan))
@@ -156,9 +162,9 @@ func main() {
 				methodLabel = " [SYN]"
 			}
 			if res.HTTPStatus != "" {
-				fmt.Printf("[+] Порт %d ОТКРЫТ%s | HTTP: %s\n", res.Port, methodLabel, res.HTTPStatus)
+				pterm.Success.Printfln("[+] Порт %d ОТКРЫТ%s | HTTP: %s\n", res.Port, methodLabel, res.HTTPStatus)
 			} else {
-				fmt.Printf("[+] Порт %d ОТКРЫТ%s\n", res.Port, methodLabel)
+				pterm.Success.Printfln("[+] Порт %d ОТКРЫТ%s\n", res.Port, methodLabel)
 			}
 		}
 	}
