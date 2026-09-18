@@ -1,6 +1,6 @@
 module scanny
 
-go 1.26.1
+go 1.20.1
 
 require github.com/google/gopacket v1.1.19
 
