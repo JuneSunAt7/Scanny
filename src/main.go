@@ -2,15 +2,16 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/http"
 	"sync"
 	"time"
-"math/rand"
+
 	"scanny/scan"
 	"github.com/pterm/pterm"
-
 )
 
 type ScanJob struct {
@@ -87,13 +88,18 @@ func synWorker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResu
 		default:
 		}
 
-		err := scan.SendSYNPacket(srcIP, job.IP, 54321, job.Port)
+		// Генерируем случайный порт источника для большей скрытности (опционально)
+		srcPort := randomInRange(1024, 65535)
+		
+		err := scan.SendSYNPacket(srcIP, job.IP, srcPort, job.Port)
 		if err != nil {
+			// В продакшене лучше логировать в файл или stderr, чтобы не засорять вывод результатов
 			fmt.Printf("[-] Ошибка отправки SYN на %s:%d: %v\n", job.IP, job.Port, err)
 			continue
 		}
 
-		// in prod raw socket listener
+		// ВАЖНО: Здесь отсутствует логика ожидания ответа (SYN-ACK).
+		// Сейчас код просто считает порт открытым, если пакет ушел.
 		result := ScanResult{
 			IP:     job.IP,
 			Port:   job.Port,
@@ -103,24 +109,39 @@ func synWorker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResu
 		results <- result
 	}
 }
+
 func randomInRange(min, max int) int {
 	return rand.Intn(max-min+1) + min
 }
+
 func main() {
-
-	fmt.Println("input target IP")
-	var target string
-	fmt.Scanln(&target)
-
-	targetIP := target
-	srcIP := "127.0.0.1" // IP deist for SYN packets
+	// 1. Определение флагов
+	targetIP := flag.String("i", "127.0.0.1", "Целевой IP адрес для сканирования")
+	scanMethod := flag.String("m", "tcp", "Метод сканирования: 'tcp' или 'syn'")
+	numWorkersFlag := flag.Int("w", 0, "Количество воркеров (0 = авто)")
 	
-	portsToScan := [8096]int{}
+	flag.Parse()
+
+
+	pterm.FgLightRed.Println(`
+ ███████  ██████  ███ ████  ██      ██   ██      ██	 ██		 ██
+ ██      ██       ██    ██  ██    ████   ██    ████  ██      ██
+ ███████ ██       ██ ██ ██  ██  ██  ██   ██  ██  ██  ██ ███████
+      ██ ██       ██    ██  ████    ██   ████    ██  		 ██	
+ ███████  ██████  ██    ██  ██		██	 ██		 ██	   ████████
+	`)
+
+	var numWorkers int
+	if *numWorkersFlag > 0 {
+		numWorkers = *numWorkersFlag
+	} else {
+		numWorkers = randomInRange(50, 200)
+	}
+
+	portsToScan := make([]int, 8096)
 	for i := 0; i < 8096; i++ {
-        portsToScan[i] = i + 1
-    }
-	numWorkers := randomInRange(50, 1024)
-	scanMethod := "tcp" // or "syn"
+		portsToScan[i] = i + 1
+	}
 
 	jobs := make(chan ScanJob, len(portsToScan))
 	results := make(chan ScanResult, len(portsToScan))
@@ -130,42 +151,51 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	if scanMethod == "syn" {
+	fmt.Printf("[*] Цель: %s | Метод: %s | Воркеры: %d\n", *targetIP, *scanMethod, numWorkers)
+	fmt.Println("[*] Запуск сканирования...")
+
+	if *scanMethod == "syn" {
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go synWorker(ctx, jobs, results, &wg, srcIP)
+			go synWorker(ctx, jobs, results, &wg, *targetIP) // Используем targetIP как srcIP для локального теста
 		}
-		fmt.Println("Используется SYN-сканирование")
 	} else {
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
 			go worker(ctx, jobs, results, &wg)
 		}
-		fmt.Println("Используется TCP-сканирование")
 	}
 
+	// 4. Отправка задач
 	for _, port := range portsToScan {
-		jobs <- ScanJob{IP: targetIP, Port: port}
+		jobs <- ScanJob{IP: *targetIP, Port: port}
 	}
 	close(jobs)
 
+	// 5. Ожидание завершения и закрытие канала результатов
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	fmt.Printf("\nСканирование %s запущено с %d воркерами...\n\n", targetIP, numWorkers)
+	// 6. Вывод результатов
+	foundCount := 0
 	for res := range results {
 		if res.IsOpen {
+			foundCount++
 			methodLabel := ""
 			if res.Method == "syn" {
 				methodLabel = " [SYN]"
 			}
-			if res.HTTPStatus != "" {
-				pterm.Success.Printfln("[+] Порт %d ОТКРЫТ%s | HTTP: %s\n", res.Port, methodLabel, res.HTTPStatus)
-			} else {
-				pterm.Success.Printfln("[+] Порт %d ОТКРЫТ%s\n", res.Port, methodLabel)
+			
+			msg := fmt.Sprintf("[+] Порт %d ОТКРЫТ%s", res.Port, methodLabel)
+			if res.HTTPStatus != "" && res.HTTPStatus != "Not an HTTP server" {
+				msg += fmt.Sprintf(" | HTTP: %s", res.HTTPStatus)
 			}
+			
+			pterm.Success.Println(msg)
 		}
 	}
+	
+	pterm.Info.Printf("Сканирование завершено. Найдено открытых портов: %d\n", foundCount)
 }
