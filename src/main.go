@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math/rand"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,12 +21,92 @@ type ScanJob struct {
 	Port int
 }
 
+// CVEEntry описывает структуру ответа от API уязвимостей
+type CVEEntry struct {
+	ID      string `json:"id"`
+	Summary string `json:"summary"`
+}
+
 type ScanResult struct {
 	IP         string
 	Port       int
 	IsOpen     bool
 	HTTPStatus string
-	Method     string // "tcp" или "syn"
+	Method     string     // "tcp" или "syn"
+	Banner     string     // Полученная строка-приветствие сервиса
+	CVEs       []CVEEntry // Список найденных уязвимостей
+}
+
+// grabBanner пытается прочитать приветственный баннер из открытого сокета
+func grabBanner(ctx context.Context, ip string, port int) string {
+	target := fmt.Sprintf("%s:%d", ip, port)
+	dialer := net.Dialer{Timeout: 2 * time.Second}
+	
+	conn, err := dialer.DialContext(ctx, "tcp", target)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+
+	// Для HTTP-портов отправляем минимальный запрос, чтобы спровоцировать ответ с баннером сервера
+	if port == 80 || port == 8080 || port == 443 {
+		_, _ = conn.Write([]byte("HEAD / HTTP/1.0\r\n\r\n"))
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buffer := make([]byte, 512)
+	n, err := conn.Read(buffer)
+	if err != nil {
+		return ""
+	}
+
+	// Очищаем баннер от мусорных символов и переносов строк
+	banner := string(buffer[:n])
+	banner = strings.ReplaceAll(banner, "\r", "")
+	banner = strings.ReplaceAll(banner, "\n", " ")
+	return strings.TrimSpace(banner)
+}
+
+// checkCVE отправляет запрос к публичной базе данных CIRCL CVE API
+func checkCVE(keyword string) []CVEEntry {
+	if keyword == "" {
+		return nil
+	}
+
+	// Поиск по ключевому слову софта (например, nginx, openssh, apache)
+	url := fmt.Sprintf("https://circl.lu", strings.ToLower(keyword))
+	client := &http.Client{Timeout: 4 * time.Second}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	var results []CVEEntry
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		return nil
+	}
+
+	return results
+}
+
+// detectSoftware пытается вычленить имя известного ПО из сырого баннера
+func detectSoftware(banner string) string {
+	lowBanner := strings.ToLower(banner)
+	
+	// Базовые маркеры для демонстрации (в идеале заменить на регулярные выражения)
+	services := []string{"openssh", "nginx", "apache", "vsftpd", "tomcat", "mysql", "redis", "smb"}
+	for _, service := range services {
+		if strings.Contains(lowBanner, service) {
+			return service
+		}
+	}
+	return ""
 }
 
 func worker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResult, wg *sync.WaitGroup) {
@@ -59,6 +141,17 @@ func worker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResult,
 			IsOpen: true,
 			Method: "tcp",
 		}
+
+		// [Интеграция CVE]: Собираем баннер, если сканируем по TCP
+		banner := grabBanner(ctx, job.IP, job.Port)
+		if banner != "" {
+			result.Banner = banner
+			software := detectSoftware(banner)
+			if software != "" {
+				result.CVEs = checkCVE(software)
+			}
+		}
+
 		if job.Port == 80 || job.Port == 443 || job.Port == 8080 {
 			protocol := "http"
 			if job.Port == 443 {
@@ -92,18 +185,28 @@ func synWorker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResu
 		
 		err := scan.SendSYNPacket(srcIP, job.IP, srcPort, job.Port)
 		if err != nil {
-			// В продакшене лучше логировать в файл или stderr, чтобы не засорять вывод результатов
 			fmt.Printf("[-] Ошибка отправки SYN на %s:%d: %v\n", job.IP, job.Port, err)
 			continue
 		}
 
-	
 		result := ScanResult{
 			IP:     job.IP,
 			Port:   job.Port,
 			IsOpen: true, 
 			Method: "syn",
 		}
+
+		// При SYN-сканировании полноценное соединение не устанавливается,
+		// поэтому для получения баннера и CVE мы отправляем точечный TCP-запрос
+		banner := grabBanner(ctx, job.IP, job.Port)
+		if banner != "" {
+			result.Banner = banner
+			software := detectSoftware(banner)
+			if software != "" {
+				result.CVEs = checkCVE(software)
+			}
+		}
+
 		results <- result
 	}
 }
@@ -118,7 +221,6 @@ func main() {
 	numWorkersFlag := flag.Int("w", 0, "Количество воркеров (0 = авто)")
 	
 	flag.Parse()
-
 
 	pterm.FgLightRed.Println(`
  ███████  ██████  ███ ████  
@@ -149,7 +251,7 @@ func main() {
 	var wg sync.WaitGroup
 
 	fmt.Printf("[*] Цель: %s | Метод: %s | Воркеры: %d\n", *targetIP, *scanMethod, numWorkers)
-	fmt.Println("[*] Запуск сканирования...")
+	fmt.Println("[*] Запуск сканирования с поиском CVE...")
 
 	if *scanMethod == "syn" {
 		for i := 0; i < numWorkers; i++ {
@@ -185,8 +287,36 @@ func main() {
 			if res.HTTPStatus != "" && res.HTTPStatus != "Not an HTTP server" {
 				msg += fmt.Sprintf(" | HTTP: %s", res.HTTPStatus)
 			}
+			if res.Banner != "" {
+				// Отрезаем слишком длинные баннеры для красоты вывода
+				displayBanner := res.Banner
+				if len(displayBanner) > 60 {
+					displayBanner = displayBanner[:57] + "..."
+				}
+				msg += fmt.Sprintf(" | ПО: %s", displayBanner)
+			}
 			
 			pterm.Success.Println(msg)
+
+			// Вывод найденных CVE уязвимостей
+			if len(res.CVEs) > 0 {
+				pterm.FgYellow.Println("   └── Найдена угроза! Свежие CVE:")
+				
+				// Лимитируем вывод до 3-х уязвимостей, чтобы терминал не затапливало
+				limit := 3
+				if len(res.CVEs) < limit {
+					limit = len(res.CVEs)
+				}
+				for i := 0; i < limit; i++ {
+					cve := res.CVEs[i]
+					summary := cve.Summary
+					if len(summary) > 75 {
+						summary = summary[:72] + "..."
+					}
+					pterm.FgLightRed.Printf("       ⚠️  %-15s -> %s\n", cve.ID, summary)
+				}
+			}
+			
 		}
 	}
 	

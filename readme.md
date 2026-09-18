@@ -8,3 +8,5 @@
 ### Использование и запуск
 
 > go run main.go -h
+
+![alt text](image-1.png)
