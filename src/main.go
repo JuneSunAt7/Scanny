@@ -104,8 +104,13 @@ func synWorker(ctx context.Context, jobs <-chan ScanJob, results chan<- ScanResu
 
 func main() {
 	
-	targetIP := "127.0.0.1"
+	fmt.Println("input target IP")
+	var target string
+	fmt.Scanln(&target)
+
+	targetIP := target
 	srcIP := "127.0.0.1" // IP deist for SYN packets
+	
 	portsToScan := []int{21, 22, 25, 53, 80, 110, 443, 3306, 8080}
 
 	numWorkers := 50
